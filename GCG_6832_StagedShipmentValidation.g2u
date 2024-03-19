@@ -1,0 +1,148 @@
+﻿Program.Sub.Preflight.Start
+V.Global.sError.Declare(String)
+
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+'Author: Arturo Almaguer
+'Date: 8th July 2022
+'Customer: George Risk Industries
+'This program will stop a stagged shipment to be shipped if certain criteria is met
+'This script is triggered from 38411 Post Packing List hook and 38424 Pre Ship hook
+
+Function.Intrinsic.UI.UsePixels ' Allows you to use Pixels instead of Twips throughout
+
+F.Intrinsic.Control.Try
+
+	V.Local.sCustomer.Declare(String)
+	V.Local.sSQL.Declare(String)
+	V.Local.sNotes.Declare(String)
+	V.Local.iRowCount.Declare(Long)
+	V.Local.iCounter.Declare(Long)
+	V.Local.sTemp.Declare(String)
+	V.Local.sSelectedRecord.Declare(String)
+	V.Local.iUnpackedQty.Declare(Long)
+	V.Local.sPackingList.Declare(String)
+	V.Local.sOrderNo.Declare(String)
+	V.Local.sComments.Declare(String)
+	V.Local.sArcTitle.Declare(String, "GCG 6832 - Staged Shipment Validation")
+	V.Local.sPckNo.Declare(String)
+	
+	V.Local.sPackingList.Set(V.Passed.000006)
+	V.Local.sCustomer.Set(V.Passed.000058)
+	F.Intrinsic.String.LPad(V.Local.sPackingList, "0", 7, V.Local.sPckNo)
+	
+	F.Intrinsic.Control.If(V.Caller.Switches, =, "O")
+	
+		F.Intrinsic.Control.SelectCase(V.Caller.Hook)
+			
+			F.Intrinsic.Control.Case(38411)
+			'Post Packing List hook
+			
+				F.ODBC.Connection!Con.OpenCompanyConnection
+				
+				'Getting staged shipment's customer
+				Function.Intrinsic.String.Build("select RTRIM(CUST) CUST from V_STAGING_HEADER where PCK_NO = '{0}';", V.Local.sPckNo, V.Local.sSQL)
+				F.ODBC.Connection!Con.ExecuteAndReturn(V.Local.sSQL, V.Local.sCustomer)
+				
+				F.Intrinsic.Control.If(V.Ambient.ExecuteAndReturnEOF, =, False)
+				
+					'Verifying if customer is on credit hold.
+					Function.Intrinsic.String.Build("select RTRIM(FLAG_CREDIT_HOLD) FLAG_CREDIT_HOLD from V_CUSTOMER_MASTER where CUSTOMER = '{0}';", V.Local.sCustomer, V.Local.sSQL)
+					F.ODBC.Connection!Con.ExecuteAndReturn(V.Local.sSQL, V.Local.sSQL)
+					
+					'No V.Ambient.ExecuteAndReturnEOF because Customer must exist in GSS in order to create an order for them
+					F.Intrinsic.Control.If(V.Local.sSQL, =, "Y")
+						
+						'Displaying msgbox to let the user know this customer is on credit hold
+						F.Intrinsic.UI.Msgbox("This customer is on credit hold, do not ship order.", V.Local.sArcTitle)
+				
+					F.Intrinsic.Control.EndIf
+				
+				F.Intrinsic.Control.EndIf
+				
+				'Retrieving any order comments
+				Function.Intrinsic.String.Build("select RTRIM(ORDER_NO) ORDER_NO from V_STAGING_ORDERS where PCK_NO = '{0}';", V.Local.sPackingList, V.Local.sSQL)
+				F.ODBC.Connection!Con.ExecuteAndReturn(V.Local.sSQL, V.Local.sOrderNo)
+				
+				F.Intrinsic.String.Build("select RTRIM(TEXT) TEXT from V_ORDER_HF_TEXT where ORDER_NUMBER = '{0}';", V.Local.sOrderNo, V.Local.sSQL)
+				F.ODBC.Connection!Con.ExecuteAndReturn(V.Local.sSQL, V.Local.sComments)
+				
+				F.Intrinsic.Control.If(V.Ambient.ExecuteAndReturnEOF, =, False)
+					'Displaying msgbox to display the order comments
+					Function.Intrinsic.String.Build("Comments at order level:{0}{1}", V.Ambient.NewLine, V.Local.sComments, V.Local.sComments)
+					F.Intrinsic.UI.Msgbox(V.Local.sComments, V.Local.sArcTitle)
+					
+				F.Intrinsic.Control.EndIf
+				
+				'Retrieving any AR Customer Master Order Notes
+				Function.Intrinsic.String.Build("select RTRIM(TEXT) TEXT from V_CUST_ORDER_NOTES where CUSTOMER = '{0}';", V.Local.sCustomer, V.Local.sSQL)
+				F.ODBC.Connection!Con.ExecuteAndReturn(V.Local.sSQL, V.Local.sNotes)
+				
+				F.Intrinsic.Control.If(V.Ambient.ExecuteAndReturnEOF, =, False)
+				
+					F.Intrinsic.Control.If(V.Local.sNotes, <>, "")
+						'Displaying msgbox to display the order notes at the customer level
+						Function.Intrinsic.String.Build("Notes at customer level:{0}{1}", V.Ambient.NewLine, V.Local.sNotes, V.Local.sNotes)
+						F.Intrinsic.UI.Msgbox(V.Local.sNotes, V.Local.sArcTitle)
+					F.Intrinsic.Control.EndIf
+			
+				F.Intrinsic.Control.EndIf
+				F.ODBC.Connection!Con.Close		
+			
+			F.Intrinsic.Control.Case(38424)
+			'Pre Ship hook
+			
+				'Loading BDF to validate if there are selected lines with an unpacked quantity greater than 0 
+				F.Intrinsic.BDF.Load("GAB-BDF", "AUX001")
+				F.Intrinsic.BDF.ReadRowCount("GAB-BDF", V.Local.iRowCount)
+				'Subtracting 1 to V.Local.iRowCount since For-loop considers 0 index
+				F.Intrinsic.Math.Sub(V.Local.iRowCount, 1, V.Local.iRowCount)
+				
+				'Looping through BDF records
+				F.Intrinsic.Control.For(V.Local.iCounter, 0, V.Local.iRowCount, 1)
+				
+					F.Intrinsic.BDF.ReadRow("GAB-BDF", V.Local.iCounter, V.Local.sTemp)
+					F.Intrinsic.String.Split(V.Local.sTemp, "|~|", V.Local.sTemp)
+					V.Local.sSelectedRecord.Set(V.Local.sTemp(0))
+					V.Local.iUnpackedQty.Set(V.Local.sTemp(12))
+					
+					'If there are unpacked quantities for any of the selected records, program will cancel the shipment process and notify the user.
+					F.Intrinsic.Control.If(V.Local.sSelectedRecord, =, "Y", "AND", V.Local.iUnpackedQty, >, 0)
+						F.Intrinsic.UI.Msgbox("Ship Qty doesn't match Staged Qty for a selected record(s).", V.Local.sArcTitle)
+						V.Passed.777777.Set(1)
+						f.Intrinsic.Control.ExitFor(V.Local.iCounter)
+					F.Intrinsic.Control.EndIf
+				
+				F.Intrinsic.Control.Next(V.Local.iCounter)
+			
+		F.Intrinsic.Control.EndSelect
+	
+	F.Intrinsic.Control.EndIf
+	
+F.Intrinsic.Control.Catch
+
+	F.Intrinsic.Control.CallSub(CatchError)
+	
+F.Intrinsic.Control.EndTry
+Program.Sub.Main.End
+Program.Sub.CatchError.Start
+'To display the error
+F.Intrinsic.String.Build("Project: {0}{1}{1}Subroutine: {2}{1}Error Occurred {3} with description {4}{1}{1}GAB Version: {5}", V.Ambient.ScriptPath, V.Ambient.Newline, V.Ambient.SubroutineCalledFrom, V.Ambient.ErrorNumber, V.Ambient.ErrorDescription, V.Ambient.GABVersion, V.Global.sError) 
+F.Intrinsic.UI.Msgbox(V.Global.sError)
+F.Intrinsic.Control.CallSub("Unload")
+Program.Sub.CatchError.End
+Program.Sub.Unload.Start
+'Closes the connection if it is open
+f.Intrinsic.Control.If(v.ODBC.con.exists,=,"1") 	
+    f.ODBC.Connection!Con.Close
+f.Intrinsic.Control.EndIf
+
+'End program
+F.Intrinsic.Control.End
+Program.Sub.Unload.End
+
+Program.Sub.Comments.Start
+${$5$}$20.1.8223.27623$}$1
+${$6$}$apadilla$}$20220714164853762$}$Lag9STqBJOmNXSbd5+msRcBWPGz0aFqSzPePUG9qWbwzZ3Z1rn4JXGL7UFsOJ9vDHejFYemADvsY/kKwEfI1VA==
+Program.Sub.Comments.End
